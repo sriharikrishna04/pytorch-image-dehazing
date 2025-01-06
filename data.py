@@ -58,7 +58,7 @@ class MyDataset(data.Dataset):
         super(MyDataset, self).__init__()
         self.is_train = is_train
 
-        hazy_dir = os.path.join(data_dir, 'Hazy')
+        hazy_dir = os.path.join(data_dir, 'hazy')
         target_dir = os.path.join(data_dir, 'GT')
 
         self.input_file_paths = get_file_paths(hazy_dir)
