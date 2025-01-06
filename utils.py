@@ -55,11 +55,9 @@ class SaveData:
         with open(self.exp_dir + '/params.txt', 'w') as params_file:
             params_file.write(str(args.__dict__) + "\n")
 
-    def save_model(self, model, epoch):
-        torch.save(model.state_dict(), os.path.join(self.model_dir, 'model_lastest.pt'))
-        # torch.save(model.state_dict(), os.path.join(self.model_dir, 'model_%04d.pt' % epoch))
-        torch.save(model, os.path.join(self.model_dir, 'model_obj.pt'))
-        torch.save(epoch, os.path.join(self.model_dir, 'last_epoch.pt'))
+    def save_model(self,netG,netD,epoch,optimizerG,optimizerD,schedulerG,schedulerD):
+        torch.save({'epoch': epoch,'netG': netG.state_dict(),'netD': netD.state_dict(),'optimizerG': optimizerG.state_dict(),'optimizerD': optimizerD.state_dict(),'schedulerG': schedulerG.state_dict(),'schedulerD': schedulerD.state_dict(),}, os.path.join(self.model_dir, f'checkpoint_epoch_{epoch}.pth'))
+       
 
     def save_log(self, log):
         sys.stdout.flush()
