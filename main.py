@@ -37,6 +37,7 @@ parser.add_argument('--pool_size', type=int, default=50, help='Buffer size for s
 # misc
 parser.add_argument('--period', type=int, default=1, help='period of printing logs')
 parser.add_argument('--gpu', type=int, required=True, help='gpu index')
+parser.add_argument('--checkpoint', type=str, default=None, help='path to checkpoint file')
 
 args = parser.parse_args()
 
@@ -48,10 +49,8 @@ def train(args):
     print(args)
 
     # net
-    netG = Generator()
-    netG = netG.cuda()
-    netD = Discriminator()
-    netD = netD.cuda()
+    netG = Generator().cuda()
+    netD = Discriminator().cuda()
 
     # loss
     l1_loss = nn.L1Loss().cuda()
@@ -70,7 +69,19 @@ def train(args):
     save = SaveData(args.save_dir, args.exp, True)
     save.save_params(args)
 
-    # netG, _ = save.load_model(netG)
+    # Load checkpoint if provided
+    start_epoch = 0
+    if args.checkpoint:
+        print(f"Loading checkpoint from {args.checkpoint}...")
+        checkpoint = torch.load(args.checkpoint)
+        netG.load_state_dict(checkpoint['netG'])
+        netD.load_state_dict(checkpoint['netD'])
+        optimizerG.load_state_dict(checkpoint['optimizerG'])
+        optimizerD.load_state_dict(checkpoint['optimizerD'])
+        schedulerG.load_state_dict(checkpoint['schedulerG'])
+        schedulerD.load_state_dict(checkpoint['schedulerD'])
+        start_epoch = checkpoint['epoch'] + 1
+        print(f"Resumed training from epoch {start_epoch}")
 
     dataset = MyDataset(args.data_dir, is_train=True)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
@@ -81,10 +92,9 @@ def train(args):
 
     image_pool = ImagePool(args.pool_size)
 
-    vgg = Vgg16(requires_grad=False)
-    vgg.cuda()
+    vgg = Vgg16(requires_grad=False).cuda()
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print("* Epoch {}/{}".format(epoch + 1, args.epochs))
 
         schedulerG.step()
@@ -116,8 +126,7 @@ def train(args):
             real_output = netD(target_image)
             d_real_loss = bce_loss(real_output, real_label)
             d_real_loss.backward()
-            d_real_loss = d_real_loss.data.cpu().numpy()
-            d_total_real_loss += d_real_loss
+            d_total_real_loss += d_real_loss.item()
 
             ## fake image
             fake_image = output_image.detach()
@@ -125,11 +134,10 @@ def train(args):
             fake_output = netD(fake_image)
             d_fake_loss = bce_loss(fake_output, fake_label)
             d_fake_loss.backward()
-            d_fake_loss = d_fake_loss.data.cpu().numpy()
-            d_total_fake_loss += d_fake_loss
+            d_total_fake_loss += d_fake_loss.item()
 
             ## loss
-            d_total_loss += d_real_loss + d_fake_loss
+            d_total_loss += (d_real_loss.item() + d_fake_loss.item())
 
             optimizerD.step()
 
@@ -140,48 +148,29 @@ def train(args):
             ## reconstruction loss
             g_res_loss = l1_loss(output_image, target_image)
             g_res_loss.backward(retain_graph=True)
-            g_res_loss = g_res_loss.data.cpu().numpy()
-            g_total_res_loss += g_res_loss
+            g_total_res_loss += g_res_loss.item()
 
             ## perceptual loss
             g_per_loss = args.p_factor * l2_loss(vgg(output_image), vgg(target_image))
             g_per_loss.backward(retain_graph=True)
-            g_per_loss = g_per_loss.data.cpu().numpy()
-            g_total_per_loss += g_per_loss
+            g_total_per_loss += g_per_loss.item()
 
             ## gan loss
             output = netD(output_image)
             g_gan_loss = args.g_factor * bce_loss(output, real_label)
             g_gan_loss.backward()
-            g_gan_loss = g_gan_loss.data.cpu().numpy()
-            g_total_gan_loss += g_gan_loss
+            g_total_gan_loss += g_gan_loss.item()
 
             ## loss
-            g_total_loss += g_res_loss + g_per_loss + g_gan_loss
+            g_total_loss += (g_res_loss.item() + g_per_loss.item() + g_gan_loss.item())
 
             optimizerG.step()
 
-        d_total_real_loss = d_total_real_loss / (batch + 1)
-        d_total_fake_loss = d_total_fake_loss / (batch + 1)
-        d_total_loss = d_total_loss / (batch + 1)
-        save.add_scalar('D/real', d_total_real_loss, epoch)
-        save.add_scalar('D/fake', d_total_fake_loss, epoch)
-        save.add_scalar('D/total', d_total_loss, epoch)
-
-        g_total_res_loss = g_total_res_loss / (batch + 1)
-        g_total_per_loss = g_total_per_loss / (batch + 1)
-        g_total_gan_loss = g_total_gan_loss / (batch + 1)
-        g_total_loss = g_total_loss / (batch + 1)
-        save.add_scalar('G/res', g_total_res_loss, epoch)
-        save.add_scalar('G/per', g_total_per_loss, epoch)
-        save.add_scalar('G/gan', g_total_gan_loss, epoch)
-        save.add_scalar('G/total', g_total_loss, epoch)
+        save.add_scalar('D/total', d_total_loss / (batch + 1), epoch)
+        save.add_scalar('G/total', g_total_loss / (batch + 1), epoch)
 
         if epoch % args.period == 0:
-            log = "Train d_loss: {:.5f} \t g_loss: {:.5f}".format(d_total_loss, g_total_loss)
-            print(log)
-            save.save_log(log)
-            save.save_model(netG, epoch)
+            save.save_model(netG,netD,epoch,optimizerG,optimizerD,schedulerG,schedulerD)
 
 
 if __name__ == '__main__':
