@@ -17,6 +17,12 @@ def augment(img_input, img_target):
 
 def get_patch(img_input, img_target):
     w, h = img_input.size
+    if not(w >= 2048 and h >= 2048):
+        new_width = 2048  # You can change this value
+        new_height = int((new_width / w) * h)
+        img_input = img_input.resize((new_width, new_height))
+        img_target = img_target.resize((new_width, new_height))
+    w, h = img_input.size
     if w >= 2048 and h >= 2048:
         choice = random.choice([1, 2, 3])
         if choice == 1:
@@ -47,8 +53,8 @@ def get_file_paths(folder):
     file_paths = []
     for file_name in os.listdir(folder):
         file_path = os.path.join(folder, file_name)
-        if is_large_image(file_path):
-            file_paths.append(file_path)
+        # if is_large_image(file_path):
+        file_paths.append(file_path)
     file_paths = sorted(file_paths)
     return file_paths
 
