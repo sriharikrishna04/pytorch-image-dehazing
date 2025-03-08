@@ -1,79 +1,106 @@
-import os
-import argparse
-from model import Generator, Discriminator
-from utils import SaveData, ImagePool
-from data import MyDataset
-from vgg16 import Vgg16
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.utils.data
 import torch.optim.lr_scheduler as lr_scheduler
-from torch.autograd import Variable
-
 from tqdm import tqdm
+import wandb
+import numpy as np
+import os
+from skimage.metrics import structural_similarity as ssim
+from torchmetrics.image import StructuralSimilarityIndexMeasure
+from data import MyDataset
+from model import Generator, Discriminator
+from vgg16 import Vgg16
+from utils import ImagePool, SaveData, PSNR
+import argparse
+from skimage.transform import resize
+from utils import tensor_to_rgb 
 
-parser = argparse.ArgumentParser(description='image-dehazing')
-parser.add_argument('--data_dir', type=str, default='dataset/indoor',
-                    help='dataset directory')
-parser.add_argument('--save_dir', default='results', help='data save directory')
-parser.add_argument('--batch_size', type=int, default=1, help='batch size for training')
-parser.add_argument('--n_threads', type=int, default=8, help='number of threads for data loading')
+def get_args():
+    parser = argparse.ArgumentParser(description='image-dehazing')
+    parser.add_argument('--data_dir', type=str, default='dataset/indoor',help='dataset directory')
+    parser.add_argument('--save_dir', default='results', help='data save directory')
+    parser.add_argument('--batch_size', type=int, default=1, help='batch size for training')
+    parser.add_argument('--n_threads', type=int, default=8, help='number of threads for data loading')
+    
+    # model
+    parser.add_argument('--exp', default='Net1', help='model to select')
+    
+    # optimization
+    parser.add_argument('--p_factor', type=float, default=0.5, help='perceptual loss factor')
+    parser.add_argument('--g_factor', type=float, default=0.5, help='gan loss factor')
+    parser.add_argument('--glr', type=float, default=1e-4, help='generator learning rate')
+    parser.add_argument('--dlr', type=float, default=1e-4, help='discriminator learning rate')
+    parser.add_argument('--epochs', type=int, default=10000, help='number of epochs to train')
+    parser.add_argument('--lr_step_size', type=int, default=2000, help='period of learning rate decay')
+    parser.add_argument('--lr_gamma', type=float, default=0.5, help='multiplicative factor of learning rate decay')
+    parser.add_argument('--patch_gan', type=int, default=30, help='Path GAN size')
+    parser.add_argument('--pool_size', type=int, default=50, help='Buffer size for storing generated samples from G')
+    
+    # misc
+    parser.add_argument('--period', type=int, default=1, help='period of printing logs')
+    parser.add_argument('--gpu', type=int, required=True, help='gpu index')
+    parser.add_argument('--checkpoint', type=str, default=None, help='path to checkpoint file')
+    
+    args = parser.parse_args()
+    return parser.parse_args()
 
-# model
-parser.add_argument('--exp', default='Net1', help='model to select')
 
-# optimization
-parser.add_argument('--p_factor', type=float, default=0.5, help='perceptual loss factor')
-parser.add_argument('--g_factor', type=float, default=0.5, help='gan loss factor')
-parser.add_argument('--glr', type=float, default=1e-4, help='generator learning rate')
-parser.add_argument('--dlr', type=float, default=1e-4, help='discriminator learning rate')
-parser.add_argument('--epochs', type=int, default=10000, help='number of epochs to train')
-parser.add_argument('--lr_step_size', type=int, default=2000, help='period of learning rate decay')
-parser.add_argument('--lr_gamma', type=float, default=0.5, help='multiplicative factor of learning rate decay')
-parser.add_argument('--patch_gan', type=int, default=30, help='Path GAN size')
-parser.add_argument('--pool_size', type=int, default=50, help='Buffer size for storing generated samples from G')
+def compute_metrics(netG, dataloader, device):
+    """ Compute PSNR and SSIM on test dataset """
+    netG.eval()
+    psnr_sum, ssim_sum, batch_count = 0, 0, 0
 
-# misc
-parser.add_argument('--period', type=int, default=1, help='period of printing logs')
-parser.add_argument('--gpu', type=int, required=True, help='gpu index')
-parser.add_argument('--checkpoint', type=str, default=None, help='path to checkpoint file')
+    ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
 
-args = parser.parse_args()
+    with torch.no_grad():
+        for images in tqdm(dataloader, total=len(dataloader), desc="Evaluating PSNR & SSIM"):
+            input_image, target_image = images
+            input_image, target_image = input_image.to(device), target_image.to(device)
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+            output_image = netG(input_image)
+
+            # Convert HSV output back to RGB for PSNR & SSIM calculations
+            output_image_rgb = tensor_to_rgb(output_image)  # Now a NumPy array
+            target_image_rgb = tensor_to_rgb(target_image)  # Now a NumPy array
+
+            #FIX: Remove `.cpu()` since output_image_rgb is already a NumPy array
+            psnr_value = PSNR(target_image_rgb, output_image_rgb)  # No need for .cpu().numpy()
+
+            # Compute SSIM (convert NumPy to tensor before passing to SSIM metric)
+            output_image_rgb_tensor = torch.tensor(output_image_rgb, dtype=torch.float32, device=device).permute(2, 0, 1) / 255.0
+            target_image_rgb_tensor = torch.tensor(target_image_rgb, dtype=torch.float32, device=device).permute(2, 0, 1) / 255.0
+
+            ssim_value = ssim_metric(output_image_rgb_tensor.unsqueeze(0), target_image_rgb_tensor.unsqueeze(0))
+
+            psnr_sum += psnr_value
+            ssim_sum += ssim_value.item()
+            batch_count += 1
+
+    return psnr_sum / batch_count, ssim_sum / batch_count
 
 
 def train(args):
     print(args)
+    wandb.init(project="image-dehazing", entity="sriharikrishnacbe04-psg-college-of-technology", config=vars(args), resume="allow")
 
-    # net
-    netG = Generator().cuda()
-    netD = Discriminator().cuda()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    netG, netD = Generator().to(device), Discriminator().to(device)
 
-    # loss
-    l1_loss = nn.L1Loss().cuda()
-    l2_loss = nn.MSELoss().cuda()
-    bce_loss = nn.BCELoss().cuda()
+    # Loss functions
+    l1_loss, l2_loss, bce_loss = nn.L1Loss().to(device), nn.MSELoss().to(device), nn.BCELoss().to(device)
 
-    # opt
-    optimizerG = optim.Adam(netG.parameters(), lr=args.glr)
-    optimizerD = optim.Adam(netD.parameters(), lr=args.dlr)
+    # Optimizers
+    optimizerG, optimizerD = optim.Adam(netG.parameters(), lr=args.glr), optim.Adam(netD.parameters(), lr=args.dlr)
+    schedulerG, schedulerD = lr_scheduler.StepLR(optimizerG, step_size=args.lr_step_size, gamma=args.lr_gamma), lr_scheduler.StepLR(optimizerD, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
-    # lr
-    schedulerG = lr_scheduler.StepLR(optimizerG, args.lr_step_size, args.lr_gamma)
-    schedulerD = lr_scheduler.StepLR(optimizerD, args.lr_step_size, args.lr_gamma)
-
-    # utility for saving models, parameters and logs
     save = SaveData(args.save_dir, args.exp, True)
     save.save_params(args)
 
-    # Load checkpoint if provided
     start_epoch = 0
     if args.checkpoint:
-        print(f"Loading checkpoint from {args.checkpoint}...")
-        checkpoint = torch.load(args.checkpoint)
+        checkpoint = torch.load(args.checkpoint, map_location=device)
         netG.load_state_dict(checkpoint['netG'])
         netD.load_state_dict(checkpoint['netD'])
         optimizerG.load_state_dict(checkpoint['optimizerG'])
@@ -81,97 +108,75 @@ def train(args):
         schedulerG.load_state_dict(checkpoint['schedulerG'])
         schedulerD.load_state_dict(checkpoint['schedulerD'])
         start_epoch = checkpoint['epoch'] + 1
-        print(f"Resumed training from epoch {start_epoch}")
 
     dataset = MyDataset(args.data_dir, is_train=True)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
-                                             num_workers=int(args.n_threads))
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
-    real_label = Variable(torch.ones([1, 1, args.patch_gan, args.patch_gan], dtype=torch.float)).cuda()
-    fake_label = Variable(torch.zeros([1, 1, args.patch_gan, args.patch_gan], dtype=torch.float)).cuda()
+    test_dataloader = torch.utils.data.DataLoader(torch.utils.data.Subset(dataset, range(50)), batch_size=1, shuffle=False)
 
-    image_pool = ImagePool(args.pool_size)
-
-    vgg = Vgg16(requires_grad=False).cuda()
+    vgg, image_pool = Vgg16(requires_grad=False).to(device), ImagePool(args.pool_size)
 
     for epoch in range(start_epoch, args.epochs):
-        print("* Epoch {}/{}".format(epoch + 1, args.epochs))
+        netG.train()
+        netD.train()
+
+        d_total_loss, g_total_loss = 0, 0
+
+        for batch_count, images in enumerate(tqdm(dataloader, total=len(dataloader), desc=f"Epoch {epoch+1}")):
+            input_image, target_image = images
+            input_image, target_image = input_image.to(device), target_image.to(device)
+
+            output_image = netG(input_image)
+
+            netD.requires_grad_(True)
+            netD.zero_grad()
+
+            real_loss = bce_loss(netD(target_image), torch.ones_like(netD(target_image)))
+            fake_loss = bce_loss(netD(image_pool.query(output_image.detach())), torch.zeros_like(netD(output_image)))
+            d_loss = real_loss + fake_loss
+            d_loss.backward()
+            optimizerD.step()
+            d_total_loss += d_loss.item()
+
+            netD.requires_grad_(False)
+            netG.zero_grad()
+
+            g_res_loss = l1_loss(output_image, target_image)
+            g_per_loss = args.p_factor * l2_loss(vgg(output_image), vgg(target_image))
+            g_gan_loss = args.g_factor * bce_loss(netD(output_image), torch.ones_like(netD(output_image)))
+            g_loss = g_res_loss + g_per_loss + g_gan_loss
+            g_loss.backward()
+            optimizerG.step()
+            g_total_loss += g_loss.item()
+
+            # Convert HSV output to RGB for logging (only first batch per epoch)
+            if epoch % args.period == 0 and batch_count == 0:
+                output_image_rgb = tensor_to_rgb(output_image)  # Convert HSV tensor to RGB
+                target_image_rgb = tensor_to_rgb(target_image)  # Convert HSV tensor to RGB
+            
+                wandb.log({
+                    "Generated Image (RGB)": [wandb.Image(output_image_rgb)],
+                    "Target Image (RGB)": [wandb.Image(target_image_rgb)]
+                })
+
+        avg_d_loss = d_total_loss / len(dataloader)
+        avg_g_loss = g_total_loss / len(dataloader)
+
+        # Log loss functions
+        wandb.log({"Discriminator Loss": avg_d_loss, "Generator Loss": avg_g_loss, "Epoch": epoch})
 
         schedulerG.step()
         schedulerD.step()
 
-        d_total_real_loss = 0
-        d_total_fake_loss = 0
-        d_total_loss = 0
-
-        g_total_res_loss = 0
-        g_total_per_loss = 0
-        g_total_gan_loss = 0
-        g_total_loss = 0
-
-        netG.train()
-        netD.train()
-
-        for batch, images in tqdm(enumerate(dataloader)):
-            input_image, target_image = images
-            input_image = Variable(input_image.cuda())
-            target_image = Variable(target_image.cuda())
-            output_image = netG(input_image)
-
-            # Update D
-            netD.requires_grad(True)
-            netD.zero_grad()
-
-            ## real image
-            real_output = netD(target_image)
-            d_real_loss = bce_loss(real_output, real_label)
-            d_real_loss.backward()
-            d_total_real_loss += d_real_loss.item()
-
-            ## fake image
-            fake_image = output_image.detach()
-            fake_image = Variable(image_pool.query(fake_image.data))
-            fake_output = netD(fake_image)
-            d_fake_loss = bce_loss(fake_output, fake_label)
-            d_fake_loss.backward()
-            d_total_fake_loss += d_fake_loss.item()
-
-            ## loss
-            d_total_loss += (d_real_loss.item() + d_fake_loss.item())
-
-            optimizerD.step()
-
-            # Update G
-            netD.requires_grad(False)
-            netG.zero_grad()
-
-            ## reconstruction loss
-            g_res_loss = l1_loss(output_image, target_image)
-            g_res_loss.backward(retain_graph=True)
-            g_total_res_loss += g_res_loss.item()
-
-            ## perceptual loss
-            g_per_loss = args.p_factor * l2_loss(vgg(output_image), vgg(target_image))
-            g_per_loss.backward(retain_graph=True)
-            g_total_per_loss += g_per_loss.item()
-
-            ## gan loss
-            output = netD(output_image)
-            g_gan_loss = args.g_factor * bce_loss(output, real_label)
-            g_gan_loss.backward()
-            g_total_gan_loss += g_gan_loss.item()
-
-            ## loss
-            g_total_loss += (g_res_loss.item() + g_per_loss.item() + g_gan_loss.item())
-
-            optimizerG.step()
-
-        save.add_scalar('D/total', d_total_loss / (batch + 1), epoch)
-        save.add_scalar('G/total', g_total_loss / (batch + 1), epoch)
-
         if epoch % args.period == 0:
-            save.save_model(netG,netD,epoch,optimizerG,optimizerD,schedulerG,schedulerD)
+            save.save_model(netG, netD, epoch, optimizerG, optimizerD, schedulerG, schedulerD)
 
+            # Compute PSNR and SSIM at checkpoint
+            psnr, ssim_score = compute_metrics(netG, test_dataloader, device)
+            wandb.log({"PSNR": psnr, "SSIM": ssim_score, "Epoch": epoch})
 
+    wandb.finish()
+    
 if __name__ == '__main__':
+    args = get_args()
     train(args)
