@@ -15,19 +15,14 @@ from vgg16 import Vgg16
 from utils import ImagePool, SaveData, PSNR
 import argparse
 from skimage.transform import resize
-from utils import tensor_to_rgb 
 
 def get_args():
     parser = argparse.ArgumentParser(description='image-dehazing')
-    parser.add_argument('--data_dir', type=str, default='dataset/indoor',help='dataset directory')
+    parser.add_argument('--data_dir', type=str, default='dataset/indoor', help='dataset directory')
     parser.add_argument('--save_dir', default='results', help='data save directory')
     parser.add_argument('--batch_size', type=int, default=1, help='batch size for training')
     parser.add_argument('--n_threads', type=int, default=8, help='number of threads for data loading')
-    
-    # model
     parser.add_argument('--exp', default='Net1', help='model to select')
-    
-    # optimization
     parser.add_argument('--p_factor', type=float, default=0.5, help='perceptual loss factor')
     parser.add_argument('--g_factor', type=float, default=0.5, help='gan loss factor')
     parser.add_argument('--glr', type=float, default=1e-4, help='generator learning rate')
@@ -35,15 +30,11 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=10000, help='number of epochs to train')
     parser.add_argument('--lr_step_size', type=int, default=2000, help='period of learning rate decay')
     parser.add_argument('--lr_gamma', type=float, default=0.5, help='multiplicative factor of learning rate decay')
-    parser.add_argument('--patch_gan', type=int, default=30, help='Path GAN size')
+    parser.add_argument('--patch_gan', type=int, default=30, help='Patch GAN size')
     parser.add_argument('--pool_size', type=int, default=50, help='Buffer size for storing generated samples from G')
-    
-    # misc
     parser.add_argument('--period', type=int, default=1, help='period of printing logs')
     parser.add_argument('--gpu', type=int, required=True, help='gpu index')
     parser.add_argument('--checkpoint', type=str, default=None, help='path to checkpoint file')
-    
-    args = parser.parse_args()
     return parser.parse_args()
 
 
@@ -53,6 +44,7 @@ def compute_metrics(netG, dataloader, device):
     psnr_sum, ssim_sum, batch_count = 0, 0, 0
 
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+  # Set data_range as per your image format
 
     with torch.no_grad():
         for images in tqdm(dataloader, total=len(dataloader), desc="Evaluating PSNR & SSIM"):
@@ -61,18 +53,11 @@ def compute_metrics(netG, dataloader, device):
 
             output_image = netG(input_image)
 
-            # Convert HSV output back to RGB for PSNR & SSIM calculations
-            output_image_rgb = tensor_to_rgb(output_image)  # Now a NumPy array
-            target_image_rgb = tensor_to_rgb(target_image)  # Now a NumPy array
+            # Compute PSNR
+            psnr_value = PSNR(target_image.cpu().numpy(), output_image.cpu().numpy())
 
-            #FIX: Remove `.cpu()` since output_image_rgb is already a NumPy array
-            psnr_value = PSNR(target_image_rgb, output_image_rgb)  # No need for .cpu().numpy()
-
-            # Compute SSIM (convert NumPy to tensor before passing to SSIM metric)
-            output_image_rgb_tensor = torch.tensor(output_image_rgb, dtype=torch.float32, device=device).permute(2, 0, 1) / 255.0
-            target_image_rgb_tensor = torch.tensor(target_image_rgb, dtype=torch.float32, device=device).permute(2, 0, 1) / 255.0
-
-            ssim_value = ssim_metric(output_image_rgb_tensor.unsqueeze(0), target_image_rgb_tensor.unsqueeze(0))
+            # Compute SSIM using torchmetrics
+            ssim_value = ssim_metric(output_image, target_image)
 
             psnr_sum += psnr_value
             ssim_sum += ssim_value.item()
@@ -122,7 +107,7 @@ def train(args):
 
         d_total_loss, g_total_loss = 0, 0
 
-        for batch_count, images in enumerate(tqdm(dataloader, total=len(dataloader), desc=f"Epoch {epoch+1}")):
+        for images in tqdm(dataloader, total=len(dataloader), desc=f"Epoch {epoch+1}"):
             input_image, target_image = images
             input_image, target_image = input_image.to(device), target_image.to(device)
 
@@ -149,16 +134,6 @@ def train(args):
             optimizerG.step()
             g_total_loss += g_loss.item()
 
-            # Convert HSV output to RGB for logging (only first batch per epoch)
-            if epoch % args.period == 0 and batch_count == 0:
-                output_image_rgb = tensor_to_rgb(output_image)  # Convert HSV tensor to RGB
-                target_image_rgb = tensor_to_rgb(target_image)  # Convert HSV tensor to RGB
-            
-                wandb.log({
-                    "Generated Image (RGB)": [wandb.Image(output_image_rgb)],
-                    "Target Image (RGB)": [wandb.Image(target_image_rgb)]
-                })
-
         avg_d_loss = d_total_loss / len(dataloader)
         avg_g_loss = g_total_loss / len(dataloader)
 
@@ -176,7 +151,7 @@ def train(args):
             wandb.log({"PSNR": psnr, "SSIM": ssim_score, "Epoch": epoch})
 
     wandb.finish()
-    
+
 if __name__ == '__main__':
     args = get_args()
     train(args)
