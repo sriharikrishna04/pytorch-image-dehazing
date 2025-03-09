@@ -5,6 +5,8 @@ import sys
 import numpy as np
 from tensorboardX import SummaryWriter
 from torchvision import transforms
+
+
 import cv2
 
 def PSNR(target, output):
@@ -16,34 +18,20 @@ def PSNR(target, output):
     psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
     return psnr
 
+
+
 def tensor_to_rgb(x):
-    """Convert tensor (HSV format) to RGB format for visualization."""
-    output = x.detach().cpu().squeeze(0).numpy()  # Ensure tensor is on CPU
-    output = output.transpose(1, 2, 0)  # Change shape from (C, H, W) -> (H, W, C)
-
-    # Convert back to [0, 255] scale (assuming input is in range [-1, 1])
-    output = (output * 255).clip(0, 255).astype(np.uint8)
-
-    # Convert HSV to RGB
-    output = cv2.cvtColor(output, cv2.COLOR_HSV2RGB)
-
+    output = x.cpu()
+    output = output.data.squeeze(0).numpy()
+    output = (output + 1.0) * 127.5
+    output = output.clip(0, 255).transpose(1, 2, 0)
     return output
 
 
 def rgb_to_tensor(x):
-    """
-    Convert an RGB image to an HSV tensor.
-    """
-    if isinstance(x, torch.Tensor):  # If input is a tensor, convert to NumPy
-        x = x.permute(1, 2, 0).cpu().numpy()  # Convert (C, H, W) -> (H, W, C)
-    
-    if not isinstance(x, np.ndarray):  # Convert PIL image to NumPy
-        x = np.array(x)
+    output = (transforms.ToTensor()(x) - 0.5) / 0.5
+    return output
 
-    hsv_image = cv2.cvtColor(x, cv2.COLOR_RGB2HSV)  # Convert RGB to HSV
-    hsv_tensor = torch.from_numpy(hsv_image).permute(2, 0, 1).float() / 255.0  # Normalize
-
-    return hsv_tensor
 
 def get_file_paths(imgdir):
     file_paths = []
@@ -51,6 +39,7 @@ def get_file_paths(imgdir):
         file_paths.append(os.path.join(imgdir, file_name))
     file_paths = sorted(file_paths)
     return file_paths
+
 
 class SaveData:
     def __init__(self, save_dir, exp, finetuning):
@@ -75,6 +64,7 @@ class SaveData:
             os.makedirs(tensorboard_dir)
         self.writer = SummaryWriter(tensorboard_dir)
         
+
     def get_latest_model_path(self):
         """Returns the latest checkpoint file path."""
         checkpoints = [f for f in os.listdir(self.model_dir) if f.startswith("checkpoint_epoch_") and f.endswith(".pth")]
@@ -83,12 +73,14 @@ class SaveData:
         latest_checkpoint = sorted(checkpoints, key=lambda x: int(x.split('_')[-1].split('.')[0]))[-1]
         return os.path.join(self.model_dir, latest_checkpoint)
 
+
     def save_params(self, args):
         with open(self.exp_dir + '/params.txt', 'w') as params_file:
             params_file.write(str(args.__dict__) + "\n")
 
     def save_model(self,netG,netD,epoch,optimizerG,optimizerD,schedulerG,schedulerD):
         torch.save({'epoch': epoch,'netG': netG.state_dict(),'netD': netD.state_dict(),'optimizerG': optimizerG.state_dict(),'optimizerD': optimizerD.state_dict(),'schedulerG': schedulerG.state_dict(),'schedulerD': schedulerD.state_dict(),}, os.path.join(self.model_dir, f'checkpoint_epoch_{epoch}.pth'))
+       
 
     def save_log(self, log):
         sys.stdout.flush()
@@ -103,6 +95,7 @@ class SaveData:
 
     def add_scalar(self, tag, value, step):
         self.writer.add_scalar(tag, value, step)
+
 
 class ImagePool:
     def __init__(self, pool_size=50):
