@@ -18,11 +18,11 @@ def augment(img_input, img_target):
 def get_patch(img_input, img_target):
     w, h = img_input.size
     if not (w >= 2048 and h >= 2048):
-    if not(w >= 2048 and h >= 2048):
-        new_width = 2048  # You can change this value
-        new_height = int((new_width / w) * h)
-        img_input = img_input.resize((new_width, new_height))
-        img_target = img_target.resize((new_width, new_height))
+        if not (w >= 2048 and h >= 2048):
+            new_width = 2048  # You can change this value
+            new_height = int((new_width / w) * h)
+            img_input = img_input.resize((new_width, new_height))
+            img_target = img_target.resize((new_width, new_height))
     w, h = img_input.size
     if w >= 2048 and h >= 2048:
         choice = random.choice([1, 2, 3])
