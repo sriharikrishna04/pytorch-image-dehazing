@@ -17,11 +17,8 @@ def augment(img_input, img_target):
 
 def get_patch(img_input, img_target):
     w, h = img_input.size
-<<<<<<< HEAD
     if not (w >= 2048 and h >= 2048):
-=======
     if not(w >= 2048 and h >= 2048):
->>>>>>> 5d2e4b2e6203bddf498ee0b045cc33ef097014d8
         new_width = 2048  # You can change this value
         new_height = int((new_width / w) * h)
         img_input = img_input.resize((new_width, new_height))
