@@ -16,6 +16,7 @@ from utils import ImagePool, SaveData, PSNR
 import argparse
 from skimage.transform import resize
 
+
 def get_args():
     parser = argparse.ArgumentParser(description='image-dehazing')
     parser.add_argument('--data_dir', type=str, default='dataset/indoor', help='dataset directory')
@@ -44,7 +45,7 @@ def compute_metrics(netG, dataloader, device):
     psnr_sum, ssim_sum, batch_count = 0, 0, 0
 
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
-  # Set data_range as per your image format
+    # Set data_range as per your image format
 
     with torch.no_grad():
         for images in tqdm(dataloader, total=len(dataloader), desc="Evaluating PSNR & SSIM"):
@@ -151,6 +152,7 @@ def train(args):
             wandb.log({"PSNR": psnr, "SSIM": ssim_score, "Epoch": epoch})
 
     wandb.finish()
+
 
 if __name__ == '__main__':
     args = get_args()
