@@ -5,9 +5,8 @@ import sys
 import numpy as np
 from tensorboardX import SummaryWriter
 from torchvision import transforms
-
-
 import cv2
+
 
 def PSNR(target, output):
     """Computes the Peak Signal-to-Noise Ratio (PSNR) between two images."""
@@ -17,7 +16,6 @@ def PSNR(target, output):
     max_pixel = 255.0
     psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
     return psnr
-
 
 
 def tensor_to_rgb(x):
@@ -63,7 +61,6 @@ class SaveData:
         if not os.path.exists(tensorboard_dir):
             os.makedirs(tensorboard_dir)
         self.writer = SummaryWriter(tensorboard_dir)
-        
 
     def get_latest_model_path(self):
         """Returns the latest checkpoint file path."""
@@ -73,14 +70,20 @@ class SaveData:
         latest_checkpoint = sorted(checkpoints, key=lambda x: int(x.split('_')[-1].split('.')[0]))[-1]
         return os.path.join(self.model_dir, latest_checkpoint)
 
-
     def save_params(self, args):
         with open(self.exp_dir + '/params.txt', 'w') as params_file:
             params_file.write(str(args.__dict__) + "\n")
 
-    def save_model(self,netG,netD,epoch,optimizerG,optimizerD,schedulerG,schedulerD):
-        torch.save({'epoch': epoch,'netG': netG.state_dict(),'netD': netD.state_dict(),'optimizerG': optimizerG.state_dict(),'optimizerD': optimizerD.state_dict(),'schedulerG': schedulerG.state_dict(),'schedulerD': schedulerD.state_dict(),}, os.path.join(self.model_dir, f'checkpoint_epoch_{epoch}.pth'))
-       
+    def save_model(self, netG, netD, epoch, optimizerG, optimizerD, schedulerG, schedulerD):
+        torch.save({
+            'epoch': epoch,
+            'netG': netG.state_dict(),
+            'netD': netD.state_dict(),
+            'optimizerG': optimizerG.state_dict(),
+            'optimizerD': optimizerD.state_dict(),
+            'schedulerG': schedulerG.state_dict(),
+            'schedulerD': schedulerD.state_dict(),
+        }, os.path.join(self.model_dir, f'checkpoint_epoch_{epoch}.pth'))
 
     def save_log(self, log):
         sys.stdout.flush()
