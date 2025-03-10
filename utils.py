@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-
-=======
->>>>>>> 5d2e4b2e6203bddf498ee0b045cc33ef097014d8
 import os
 import os.path
 import torch
