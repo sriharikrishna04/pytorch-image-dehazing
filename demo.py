@@ -1,5 +1,3 @@
-# %load /kaggle/working/pytorch-image-dehazing/demo.py
-# %load /kaggle/working/pytorch-image-dehazing/demo.py
 import argparse
 from model import Generator
 from PIL import Image
