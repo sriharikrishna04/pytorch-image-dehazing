@@ -1,3 +1,5 @@
+# %load /kaggle/working/pytorch-image-dehazing/demo.py
+# %load /kaggle/working/pytorch-image-dehazing/demo.py
 import argparse
 from model import Generator
 from PIL import Image
@@ -20,7 +22,8 @@ os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 def test(args):
     my_model = Generator()
     my_model.cuda()
-    my_model.load_state_dict(torch.load(args.model))
+    checkpoint = torch.load(args.model, map_location='cuda')
+    my_model.load_state_dict(checkpoint['netG'])
     my_model.eval()
 
     output_dir = args.outdir
