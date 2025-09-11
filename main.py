@@ -1,3 +1,5 @@
+# %load /kaggle/working/pytorch-image-dehazing/main.py
+# %load /kaggle/working/pytorch-image-dehazing/main.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -69,7 +71,7 @@ def compute_metrics(netG, dataloader, device):
 
 def train(args):
     print(args)
-    wandb.init(project="image-dehazing", entity="sriharikrishnacbe04-psg-college-of-technology", config=vars(args), resume="allow")
+    wandb.init(project="car dehazing", entity="sriharikrishnacbe04-psg-college-of-technology", config=vars(args), resume="allow")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     netG, netD = Generator().to(device), Discriminator().to(device)
