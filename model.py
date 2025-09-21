@@ -59,6 +59,11 @@ class Generator(nn.Module):
 
         # multi-scale
         self.conv_refin = nn.Conv2d(19, 20, 3, 1, 1)
+
+        # 🔥 Extra layers added here
+        self.extra_conv1 = nn.Conv2d(20, 20, kernel_size=3, stride=1, padding=1)#new layer
+        self.extra_conv2 = nn.Conv2d(20, 20, kernel_size=3, stride=1, padding=1)#new layer
+
         self.refout = nn.Conv2d(20, 3, kernel_size=3, stride=1, padding=1)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
         self.tanh = nn.Tanh()
@@ -69,46 +74,48 @@ class Generator(nn.Module):
         x0 = self.pool0(self.relu0(self.conv0(x)))  # 256 x 256
 
         x1 = self.dense_block1(x0)  # 256 x 256
-
         x1 = self.trans_block1(x1)  # 128 x 128
 
         x2 = self.trans_block2(self.dense_block2(x1))  # 64 x 64
 
         x3 = self.trans_block3(self.dense_block3(x2))  # 32 x 32
-        x3 = self.res31(x3)  # 32 x 32
-        x3 = self.res32(x3)  # 32 x 32
+        x3 = self.res31(x3)
+        x3 = self.res32(x3)
 
         x4 = self.trans_block4(self.dense_block4(x3))  # 64 x 64
-        x43 = F.avg_pool2d(x, 16)  # 64 x 64
-        x42 = torch.cat([x4, x2, x43], 1)  # 64 x 64
-        x42 = self.res41(x42)  # 64
-        x42 = self.res42(x42)  # 64
+        x43 = F.avg_pool2d(x, 16)
+        x42 = torch.cat([x4, x2, x43], 1)
+        x42 = self.res41(x42)
+        x42 = self.res42(x42)
 
         x5 = self.trans_block5(self.dense_block5(x42))  # 128
-        x53 = F.avg_pool2d(x, 8)  # 128
-        x52 = torch.cat([x5, x1, x53], 1)  # 128
-        x52 = self.res51(x52)  # 128
-        x52 = self.res52(x52)  # 128
+        x53 = F.avg_pool2d(x, 8)
+        x52 = torch.cat([x5, x1, x53], 1)
+        x52 = self.res51(x52)
+        x52 = self.res52(x52)
 
         x6 = self.trans_block6(self.dense_block6(x52))  # 256
-        x63 = F.avg_pool2d(x, 4)  # 256
-        x62 = torch.cat([x6, x63], 1)  # 256
-        x62 = self.res61(x62)  # 256
-        x6 = self.res62(x62)  # 256
+        x63 = F.avg_pool2d(x, 4)
+        x62 = torch.cat([x6, x63], 1)
+        x62 = self.res61(x62)
+        x6 = self.res62(x62)
 
         x7 = self.trans_block7(self.dense_block7(x6))  # 512
-        x73 = F.avg_pool2d(x, 2)  # 512
-        x72 = torch.cat([x7, x73], 1)  # 512
-        x72 = self.res71(x72)  # 512
-        x7 = self.res72(x72)  # 512
+        x73 = F.avg_pool2d(x, 2)
+        x72 = torch.cat([x7, x73], 1)
+        x72 = self.res71(x72)
+        x7 = self.res72(x72)
 
         x8 = self.trans_block8(self.dense_block8(x7))  # 1024
-        x8 = torch.cat([x8, x], 1)  # 1024
+        x8 = torch.cat([x8, x], 1)  # skip connection
 
-        x9 = self.relu(self.conv_refin(x8))  # 1024
+        x9 = self.relu(self.conv_refin(x8))
+
+        # 🔥 pass through extra layers
+        x9 = self.relu(self.extra_conv1(x9))#layer1
+        x9 = self.relu(self.extra_conv2(x9))#layer2
 
         dehaze = self.tanh(self.refout(x9))
-
         return dehaze
 
 
@@ -141,7 +148,6 @@ class TransitionBlock(nn.Module):
 
 
 def conv3x3(in_planes, out_planes, stride=1):
-    """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
@@ -155,38 +161,40 @@ class BasicResBlock(nn.Module):
 
     def forward(self, x):
         residual = x
-
         out = self.conv1(x)
         out = self.relu(out)
-
         out = self.conv2(out)
-
         out += residual
         out = self.relu(out)
-
         return out
 
 
 class Discriminator(nn.Module):
     def __init__(self, nc=3, nf=36):
         super(Discriminator, self).__init__()
-
+# changes the layers by adding the layers
         self.main = nn.Sequential(
-            nn.Conv2d(nc, nf, kernel_size=4, stride=2, padding=1, bias=False),  # 36 x 512 x 512
+            nn.Conv2d(nc, nf, kernel_size=4, stride=2, padding=1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
-            DBlock(nf, nf * 2),  # 72 x 256 x 256
-            DBlock(nf * 2, nf * 4),  # 144 x 128 x 128
-            DBlock(nf * 4, nf * 8),  # 288 x 64 x 64
-            DBlock(nf * 8, nf * 8),  # 288 x 32 x 632
-            nn.Conv2d(nf * 8, nf * 8, 4, 1, 1, bias=False),  # 288 x 31 x 31
+            DBlock(nf, nf * 2),
+            DBlock(nf * 2, nf * 4),
+            DBlock(nf * 4, nf * 8),
+            DBlock(nf * 8, nf * 8),
+            nn.Conv2d(nf * 8, nf * 8, 4, 1, 1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(nf * 8, 1, 4, 1, 1, bias=False),  # 288 x 30 x 30
+
+            # 🔥 Extra layers added here
+            nn.Conv2d(nf * 8, nf * 8, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(nf * 8),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # Final output
+            nn.Conv2d(nf * 8, 1, 4, 1, 1, bias=False),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        output = self.main(x)
-        return output
+        return self.main(x)
 
     def requires_grad(self, req):
         for param in self.parameters():
@@ -203,5 +211,4 @@ class DBlock(nn.Module):
         )
 
     def forward(self, x):
-        output = self.main(x)
-        return output
+        return self.main(x)
