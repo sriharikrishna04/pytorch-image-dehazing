@@ -1,5 +1,3 @@
-# %load /kaggle/working/pytorch-image-dehazing/main.py
-# %load /kaggle/working/pytorch-image-dehazing/main.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
