@@ -26,10 +26,10 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=1, help='batch size for training')
     parser.add_argument('--n_threads', type=int, default=8, help='number of threads for data loading')
     parser.add_argument('--exp', default='Net1', help='model to select')
-    parser.add_argument('--p_factor', type=float, default=0.5, help='perceptual loss factor')
-    parser.add_argument('--g_factor', type=float, default=0.5, help='gan loss factor')
-    parser.add_argument('--glr', type=float, default=1e-4, help='generator learning rate')
-    parser.add_argument('--dlr', type=float, default=1e-4, help='discriminator learning rate')
+    parser.add_argument('--p_factor', type=float, default=0.7, help='perceptual loss factor')
+    parser.add_argument('--g_factor', type=float, default=0.3, help='gan loss factor')
+    parser.add_argument('--glr', type=float, default=5e-5, help='generator learning rate')
+    parser.add_argument('--dlr', type=float, default=5e-5, help='discriminator learning rate')
     parser.add_argument('--epochs', type=int, default=10000, help='number of epochs to train')
     parser.add_argument('--lr_step_size', type=int, default=2000, help='period of learning rate decay')
     parser.add_argument('--lr_gamma', type=float, default=0.5, help='multiplicative factor of learning rate decay')
@@ -71,17 +71,24 @@ def compute_metrics(netG, dataloader, device):
 
 def train(args):
     print(args)
-    wandb.init(project="car dehazing", entity="sriharikrishnacbe04-psg-college-of-technology", config=vars(args), resume="allow")
+    wandb.init(project="car dehazing",
+               entity="sriharikrishnacbe04-psg-college-of-technology",
+               config=vars(args),
+               resume="allow")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     netG, netD = Generator().to(device), Discriminator().to(device)
 
-    # Loss functions
-    l1_loss, l2_loss, bce_loss = nn.L1Loss().to(device), nn.MSELoss().to(device), nn.BCELoss().to(device)
+    # --- Losses ---
+    l1_loss = nn.L1Loss().to(device)
+    l2_loss = nn.MSELoss().to(device)
+    bce_loss = nn.BCELoss().to(device)
 
-    # Optimizers
-    optimizerG, optimizerD = optim.Adam(netG.parameters(), lr=args.glr), optim.Adam(netD.parameters(), lr=args.dlr)
-    schedulerG, schedulerD = lr_scheduler.StepLR(optimizerG, step_size=args.lr_step_size, gamma=args.lr_gamma), lr_scheduler.StepLR(optimizerD, step_size=args.lr_step_size, gamma=args.lr_gamma)
+    # --- Optimizers & schedulers ---
+    optimizerG = optim.Adam(netG.parameters(), lr=args.glr)
+    optimizerD = optim.Adam(netD.parameters(), lr=args.dlr)
+    schedulerG = lr_scheduler.StepLR(optimizerG, step_size=args.lr_step_size, gamma=args.lr_gamma)
+    schedulerD = lr_scheduler.StepLR(optimizerD, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
     save = SaveData(args.save_dir, args.exp, True)
     save.save_params(args)
@@ -96,18 +103,26 @@ def train(args):
         schedulerG.load_state_dict(checkpoint['schedulerG'])
         schedulerD.load_state_dict(checkpoint['schedulerD'])
         start_epoch = checkpoint['epoch'] + 1
+        print(f"✅ Resumed from checkpoint at epoch {start_epoch}")
 
     dataset = MyDataset(args.data_dir, is_train=True)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                             batch_size=args.batch_size,
+                                             shuffle=True,
+                                             num_workers=args.n_threads)
+    test_dataloader = torch.utils.data.DataLoader(
+        torch.utils.data.Subset(dataset, range(50)), batch_size=1, shuffle=False
+    )
 
-    test_dataloader = torch.utils.data.DataLoader(torch.utils.data.Subset(dataset, range(50)), batch_size=1, shuffle=False)
+    vgg = Vgg16(requires_grad=False).to(device)
+    image_pool = ImagePool(args.pool_size)
 
-    vgg, image_pool = Vgg16(requires_grad=False).to(device), ImagePool(args.pool_size)
+    best_psnr = 0.0
+    step_count = 0
 
     for epoch in range(start_epoch, args.epochs):
         netG.train()
         netD.train()
-
         d_total_loss, g_total_loss = 0, 0
 
         for images in tqdm(dataloader, total=len(dataloader), desc=f"Epoch {epoch+1}"):
@@ -115,43 +130,65 @@ def train(args):
             input_image, target_image = input_image.to(device), target_image.to(device)
 
             output_image = netG(input_image)
+            step_count += 1
 
-            netD.requires_grad_(True)
-            netD.zero_grad()
+            # ============ Discriminator update ============
+            if step_count % 3 == 0:  # update D every 3 G steps
+                netD.requires_grad_(True)
+                netD.zero_grad()
 
-            real_loss = bce_loss(netD(target_image), torch.ones_like(netD(target_image)))
-            fake_loss = bce_loss(netD(image_pool.query(output_image.detach())), torch.zeros_like(netD(output_image)))
-            d_loss = real_loss + fake_loss
-            d_loss.backward()
-            optimizerD.step()
-            d_total_loss += d_loss.item()
+                # label smoothing
+                real_label = torch.full_like(netD(target_image), 0.9)
+                fake_label = torch.full_like(netD(output_image), 0.1)
+
+                real_loss = bce_loss(netD(target_image), real_label)
+                fake_loss = bce_loss(netD(image_pool.query(output_image.detach())), fake_label)
+                d_loss = real_loss + fake_loss
+                d_loss.backward()
+                optimizerD.step()
+            else:
+                d_loss = torch.tensor(0.0).to(device)
 
             netD.requires_grad_(False)
             netG.zero_grad()
 
+            # ============ Generator update ============
             g_res_loss = l1_loss(output_image, target_image)
             g_per_loss = args.p_factor * l2_loss(vgg(output_image), vgg(target_image))
             g_gan_loss = args.g_factor * bce_loss(netD(output_image), torch.ones_like(netD(output_image)))
-            g_loss = g_res_loss + g_per_loss + g_gan_loss
+
+            # color consistency loss
+            color_loss = torch.mean(torch.abs(torch.mean(output_image, dim=[2,3]) -
+                                              torch.mean(target_image, dim=[2,3])))
+
+            g_loss = g_res_loss + g_per_loss + g_gan_loss + 0.1 * color_loss
             g_loss.backward()
             optimizerG.step()
+
+            d_total_loss += d_loss.item()
             g_total_loss += g_loss.item()
 
         avg_d_loss = d_total_loss / len(dataloader)
         avg_g_loss = g_total_loss / len(dataloader)
 
-        # Log loss functions
-        wandb.log({"Discriminator Loss": avg_d_loss, "Generator Loss": avg_g_loss, "Epoch": epoch})
+        # --- Log losses ---
+        wandb.log({"Discriminator Loss": avg_d_loss,
+                   "Generator Loss": avg_g_loss,
+                   "Epoch": epoch})
 
         schedulerG.step()
         schedulerD.step()
 
+        # --- Validation & Checkpoint ---
         if epoch % args.period == 0:
-            save.save_model(netG, netD, epoch, optimizerG, optimizerD, schedulerG, schedulerD)
-
-            # Compute PSNR and SSIM at checkpoint
             psnr, ssim_score = compute_metrics(netG, test_dataloader, device)
             wandb.log({"PSNR": psnr, "SSIM": ssim_score, "Epoch": epoch})
+
+            # Save best PSNR model
+            if psnr > best_psnr:
+                best_psnr = psnr
+                save.save_model(netG, netD, epoch, optimizerG, optimizerD, schedulerG, schedulerD)
+                print(f"📈 New best PSNR: {best_psnr:.4f} at epoch {epoch}")
 
     wandb.finish()
 
